@@ -282,6 +282,7 @@
         <h3>Avance de carga del mes</h3>
         <div id="fajaBody"></div>
       </div>
+      <div id="faltantes"></div>
     </section>
 
     <!-- REGISTRAR -->
@@ -447,7 +448,7 @@ const $  = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
 
 const PERFILES = { ADMIN:'Administrador', GG:'Gerencia General',
-                   OPS:'Gerencia de Operaciones', RRHH:'Gerencia de Personas', CI:'Contraloría' };
+                   OPS:'Gerencia de Operaciones', RRHH:'Gerencia de Personas' };
 
 function clp(n){
   n = Math.round(Number(n)||0);
@@ -514,7 +515,7 @@ async function arrancar(){
     cuentas:r.cuentas, todasLasCuentas:r.todasLasCuentas, etiquetas:r.etiquetas,
     clientes:r.clientes, instalaciones:r.instalaciones,
     periodo:r.periodoAbierto, maestrosListos:r.maestrosListos,
-    avisoEnviado:r.avisoMaestrosEnviado
+    avisoEnviado:r.avisoMaestrosEnviado, copiaDefecto:r.copiaPorDefecto||''
   });
   $('#loginBg').style.display='none';
   $('#app').classList.remove('hide');
@@ -533,13 +534,13 @@ async function arrancar(){
    NAVEGACIÓN
    ========================================================================== */
 const VISTAS = [
-  { id:'Panel',       txt:'Panel',       perfiles:['ADMIN','GG','OPS','RRHH','CI'] },
-  { id:'Registrar',   txt:'Registrar',   perfiles:['ADMIN','GG','OPS','RRHH','CI'] },
-  { id:'Movimientos', txt:'Movimientos', perfiles:['ADMIN','GG','OPS','RRHH','CI'] },
+  { id:'Panel',       txt:'Panel',       perfiles:['ADMIN','GG','OPS','RRHH'] },
+  { id:'Registrar',   txt:'Registrar',   perfiles:['ADMIN','GG','OPS','RRHH'] },
+  { id:'Movimientos', txt:'Movimientos', perfiles:['ADMIN','GG','OPS','RRHH'] },
   { id:'Maestros',    txt:'Clientes',    perfiles:['ADMIN','RRHH'] },
   { id:'Bandeja',     txt:'Reclasificar',perfiles:['ADMIN'] },
   { id:'Usuarios',    txt:'Usuarios',    perfiles:['ADMIN'] },
-  { id:'Ajustes',     txt:'Ajustes',     perfiles:['ADMIN','GG','OPS','RRHH','CI'] }
+  { id:'Ajustes',     txt:'Ajustes',     perfiles:['ADMIN','GG','OPS','RRHH'] }
 ];
 
 function construirTabs(){
@@ -577,7 +578,15 @@ async function verPanel(){
   const r = await api('avanceMes', { periodo: S.periodo });
   if (!r.ok){ toast(r.error, true); return; }
 
-  $('#kpis').innerHTML = `
+  const propio = r.alcance === 'propio';
+
+  $('#kpis').innerHTML = propio ? `
+    <div class="kpi"><div class="num">${r.total}</div><div class="lbl">Mis registros del mes</div>
+      <div class="sub">Período ${r.periodo}</div></div>
+    <div class="kpi"><div class="num">${clp(r.montoPropio)}</div><div class="lbl">Monto neto cargado</div></div>
+    <div class="kpi ${r.pendientes?'amber':''}"><div class="num">${r.pendientes}</div>
+      <div class="lbl">Por reclasificar</div>
+      <div class="sub">${r.pendientes?'Cuentas por definir':'Sin pendientes'}</div></div>` : `
     <div class="kpi"><div class="num">${r.total}</div><div class="lbl">Movimientos del mes</div>
       <div class="sub">Período ${r.periodo}</div></div>
     <div class="kpi"><div class="num">${clp(r.totalIngreso)}</div><div class="lbl">Ingresos cargados</div></div>
@@ -591,11 +600,26 @@ async function verPanel(){
     const n = $('#nBandeja'); if (n){ n.textContent = r.pendientes; n.classList.remove('hide'); }
   }
 
-  const orden = [['GG','Gerencia General','Ingresos y comercial'],
-                 ['OPS','Gerencia de Operaciones','Equipamiento, vehículos, oficina'],
-                 ['RRHH','Gerencia de Personas','Remuneraciones y cargas sociales'],
-                 ['CI','Contraloría','Servicios, seguros y generales']];
+  const TODAS = [['GG','Gerencia General','Ingresos por cliente'],
+                 ['OPS','Gerencia de Operaciones','Costos operativos y gastos de oficina'],
+                 ['RRHH','Gerencia de Personas','Remuneraciones y cargas sociales']];
+  const orden = propio ? TODAS.filter(o => o[0] === S.perfil) : TODAS;
+  $('.faja h3').textContent = propio ? 'Mi avance de carga del mes' : 'Avance de carga del mes';
   const maxN = Math.max(1, ...orden.map(o => (r.porPerfil[o[0]]||{n:0}).n));
+
+  const falt = r.faltantes || [];
+  const NOMPERF = { GG:'Gerencia General', OPS:'Operaciones', RRHH:'Personas', ADMIN:'Administración' };
+  $('#faltantes').innerHTML = !falt.length
+    ? `<div class="aviso green">Todas las cuentas de movimiento mensual tienen registro en ${esc(r.periodo)}.</div>`
+    : `<div class="faja">
+        <h3>Cuentas sin registro este mes</h3>
+        <p style="font-size:12.5px;color:var(--muted);line-height:1.5;margin-bottom:12px">
+          Estas cuentas suelen tener movimiento todos los meses y en ${esc(r.periodo)} están vacías.
+          Puede ser correcto —a veces simplemente no hubo— pero conviene descartar el olvido antes del cierre.</p>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+          ${falt.map(c => `<span class="st pend" style="font-weight:600">${c.codigo} · ${esc(c.nombre)}${
+            propio ? '' : ' <span style="opacity:.8">(' + (NOMPERF[c.responsable]||c.responsable) + ')</span>'}</span>`).join('')}
+        </div></div>`;
 
   $('#fajaBody').innerHTML = orden.map(([k, nombre, desc]) => {
     const d = r.porPerfil[k] || { n:0, monto:0 };
@@ -734,9 +758,14 @@ async function verMovimientos(){
     .forEach(c => cta[c.codigo] = c.nombre);
   const cli = {}; S.clientes.forEach(c => cli[c.id] = c.razon_social);
 
+  const titulo = $('#vMovimientos .panel-head h2');
+  if (titulo) titulo.textContent = r.alcance === 'propio'
+    ? 'Mis movimientos del período' : 'Movimientos del período';
+
   if (!r.movimientos.length){
     $('#tablaMov').innerHTML = `<div class="vacio"><b>Sin movimientos</b>
-      No hay registros cargados en ${esc(S.periodo)}. Empiece por la pestaña Registrar.</div>`;
+      ${r.alcance === 'propio' ? 'Usted no ha registrado nada' : 'No hay registros cargados'}
+      en ${esc(S.periodo)}. Empiece por la pestaña Registrar.</div>`;
     return;
   }
 
@@ -1010,7 +1039,7 @@ async function verUsuarios(){
 
 function formUsuario(u){
   u = u || {};
-  const perfiles = ['ADMIN','GG','OPS','RRHH','CI'];
+  const perfiles = ['ADMIN','GG','OPS','RRHH'];
   return `
     <div class="field"><label>Nombre <span class="req">*</span></label>
       <input type="text" id="uNom" value="${esc(u.nombre)}"></div>
@@ -1029,6 +1058,10 @@ function formUsuario(u){
           <option value="BLOQUEADO" ${u.estado==='BLOQUEADO'?'selected':''}>Bloqueado</option>
         </select></div>
     </div>
+    <div class="field"><label>Con copia a</label>
+      <input type="text" id="uCopia" value="${esc(u.id ? '' : (S.copiaDefecto||''))}"
+        placeholder="correo1@dominio.cl, correo2@dominio.cl">
+      <div class="hint">Separe con comas. Si alguno coincide con el destinatario, se descarta.</div></div>
     <div class="field"><label>${u.id?'Clave nueva (opcional)':'Clave inicial (opcional)'}</label>
       <input type="text" id="uClave" placeholder="${u.id?'Dejar en blanco para no cambiarla':'Se genera y se envía por correo'}">
       <div class="hint">${u.id?'Solo se cambia si escribe algo aquí.'
@@ -1044,15 +1077,16 @@ async function verPreviaCorreo(){
     rut:$('#uRut').value.trim(), perfil:$('#uPerf').value,
     estado:$('#uEst').value, clave:$('#uClave').value.trim()
   };
+  const copia = $('#uCopia').value.trim();
   if (!datos.nombre || !datos.email){ toast('Nombre y correo son obligatorios.', true); return false; }
 
-  const r = await api('previsualizarBienvenida', { datos });
+  const r = await api('previsualizarBienvenida', { datos, copia });
   if (!r.ok){ toast(r.error, true); return false; }
-  _datosUsuario = datos;
+  _datosUsuario = datos; _copiaUsuario = copia;
 
   abrirModal('Vista previa del correo', `
     <div class="aviso green" style="margin-bottom:0">
-      <b>Para:</b> ${esc(r.para)}<br><b>Asunto:</b> ${esc(r.asunto)}
+      <b>Para:</b> ${esc(r.para)}${r.copia ? '<br><b>Con copia a:</b> ' + esc(r.copia) : ''}<br><b>Asunto:</b> ${esc(r.asunto)}
       ${r.claveDefinida ? '' : '<br><span style="font-size:12px">La clave aparece oculta: se genera al crear el usuario y va en el correo real.</span>'}
     </div>
     <div style="border:1.5px solid var(--line);border-radius:12px;overflow:hidden;margin-top:14px">
@@ -1068,7 +1102,7 @@ async function verPreviaCorreo(){
 window.editarUsuario = j => { const u = JSON.parse(j);
   abrirModal('Editar usuario', formUsuario(u), 'Guardar cambios', () => guardarUsuario(u.id)); };
 
-let _datosUsuario = null;
+let _datosUsuario = null, _copiaUsuario = '';
 async function guardarUsuario(id, enviarCorreo){
   const datos = id
     ? { id, nombre:$('#uNom').value.trim(), email:$('#uMail').value.trim(),
@@ -1076,7 +1110,8 @@ async function guardarUsuario(id, enviarCorreo){
         clave:$('#uClave').value.trim() }
     : _datosUsuario;
   if (!datos || !datos.nombre || !datos.email){ toast('Nombre y correo son obligatorios.', true); return false; }
-  const r = await api('guardarUsuario', { datos, enviarCorreo: enviarCorreo !== false });
+  const r = await api('guardarUsuario', { datos, copia: id ? $('#uCopia').value.trim() : _copiaUsuario,
+                                          enviarCorreo: enviarCorreo !== false });
   if (!r.ok){ toast(r.error, true); return false; }
   if (id) toast('Usuario actualizado.');
   else toast(r.enviado ? 'Usuario creado y correo enviado.'
@@ -1088,10 +1123,12 @@ window.reenviarAcceso = function(id, nombre){
   abrirModal('Enviar acceso a ' + nombre, `
     <p style="font-size:13.5px;line-height:1.6">Se genera una <b>clave nueva</b> y se envía el correo
     de bienvenida completo, con la instrucción de puesta en marcha.</p>
-    <div class="aviso amber" style="margin-top:12px">La clave anterior deja de servir. Las claves
-    se guardan cifradas, así que no es posible reenviar la que tenía.</div>`,
+    <div class="field" style="margin-top:14px"><label>Con copia a</label>
+      <input type="text" id="reCopia" value="${esc(S.copiaDefecto||'')}"></div>
+    <div class="aviso amber">La clave anterior deja de servir. Las claves se guardan cifradas,
+    así que no es posible reenviar la que tenía.</div>`,
     'Generar clave y enviar', async () => {
-      const r = await api('reenviarBienvenida', { id });
+      const r = await api('reenviarBienvenida', { id, copia: ($('#reCopia')||{}).value || '' });
       if (!r.ok){ toast(r.error, true); return false; }
       toast('Correo enviado con una clave nueva.'); return true;
     });
