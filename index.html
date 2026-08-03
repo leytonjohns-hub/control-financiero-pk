@@ -422,6 +422,7 @@
     <div class="modal-body" id="modalBody"></div>
     <div class="modal-foot">
       <button class="btn-cancel" id="modalCancel">Volver</button>
+      <button class="btn-cancel hide" id="modalAlt"></button>
       <button class="btn-confirm" id="modalOk">Confirmar</button>
     </div>
   </div>
@@ -1001,7 +1002,9 @@ async function verUsuarios(){
       <td class="cod">${u.id}</td><td>${esc(u.nombre)}</td><td>${esc(u.email)}</td>
       <td>${PERFILES[u.perfil]||u.perfil}</td>
       <td><span class="st ${u.estado==='ACTIVO'?'ok':'mal'}">${esc(u.estado)}</span></td>
-      <td><button class="mini-btn" onclick='editarUsuario(${JSON.stringify(JSON.stringify(u))})'>Editar</button></td>
+      <td style="white-space:nowrap">
+        <button class="mini-btn" onclick='editarUsuario(${JSON.stringify(JSON.stringify(u))})'>Editar</button>
+        <button class="mini-btn warn" onclick="reenviarAcceso('${u.id}','${esc(u.nombre)}')">Enviar acceso</button></td>
     </tr>`).join('') + '</tbody></table>';
 }
 
@@ -1032,21 +1035,67 @@ function formUsuario(u){
         :'Si la deja en blanco, el sistema genera una y se la envía al correo indicado.'}</div></div>`;
 }
 
-$('#btnNuevoUsuario').onclick = () => abrirModal('Nuevo usuario', formUsuario(), 'Crear usuario',
-  () => guardarUsuario(null));
+$('#btnNuevoUsuario').onclick = () =>
+  abrirModal('Nuevo usuario', formUsuario(), 'Ver el correo antes de enviarlo', verPreviaCorreo);
+
+async function verPreviaCorreo(){
+  const datos = {
+    nombre:$('#uNom').value.trim(), email:$('#uMail').value.trim(),
+    rut:$('#uRut').value.trim(), perfil:$('#uPerf').value,
+    estado:$('#uEst').value, clave:$('#uClave').value.trim()
+  };
+  if (!datos.nombre || !datos.email){ toast('Nombre y correo son obligatorios.', true); return false; }
+
+  const r = await api('previsualizarBienvenida', { datos });
+  if (!r.ok){ toast(r.error, true); return false; }
+  _datosUsuario = datos;
+
+  abrirModal('Vista previa del correo', `
+    <div class="aviso green" style="margin-bottom:0">
+      <b>Para:</b> ${esc(r.para)}<br><b>Asunto:</b> ${esc(r.asunto)}
+      ${r.claveDefinida ? '' : '<br><span style="font-size:12px">La clave aparece oculta: se genera al crear el usuario y va en el correo real.</span>'}
+    </div>
+    <div style="border:1.5px solid var(--line);border-radius:12px;overflow:hidden;margin-top:14px">
+      <iframe id="previaMail" style="width:100%;height:52vh;border:none;background:#fff"></iframe>
+    </div>`,
+    'Crear y enviar el correo', () => guardarUsuario(null, true),
+    { texto:'Crear sin enviar', accion: () => guardarUsuario(null, false) });
+
+  const f = $('#previaMail');
+  f.srcdoc = '<body style="margin:0;background:#F3F2EC;padding:14px">' + r.html + '</body>';
+  return false;
+}
 window.editarUsuario = j => { const u = JSON.parse(j);
   abrirModal('Editar usuario', formUsuario(u), 'Guardar cambios', () => guardarUsuario(u.id)); };
 
-async function guardarUsuario(id){
-  const datos = { id, nombre:$('#uNom').value.trim(), email:$('#uMail').value.trim(),
-    rut:$('#uRut').value.trim(), perfil:$('#uPerf').value, estado:$('#uEst').value,
-    clave:$('#uClave').value.trim() };
-  if (!datos.nombre || !datos.email){ toast('Nombre y correo son obligatorios.', true); return false; }
-  const r = await api('guardarUsuario', { datos });
+let _datosUsuario = null;
+async function guardarUsuario(id, enviarCorreo){
+  const datos = id
+    ? { id, nombre:$('#uNom').value.trim(), email:$('#uMail').value.trim(),
+        rut:$('#uRut').value.trim(), perfil:$('#uPerf').value, estado:$('#uEst').value,
+        clave:$('#uClave').value.trim() }
+    : _datosUsuario;
+  if (!datos || !datos.nombre || !datos.email){ toast('Nombre y correo son obligatorios.', true); return false; }
+  const r = await api('guardarUsuario', { datos, enviarCorreo: enviarCorreo !== false });
   if (!r.ok){ toast(r.error, true); return false; }
-  toast(r.clave ? 'Usuario creado. La clave se envió a su correo.' : 'Usuario actualizado.');
+  if (id) toast('Usuario actualizado.');
+  else toast(r.enviado ? 'Usuario creado y correo enviado.'
+                       : 'Usuario creado. El correo no se envió: use Enviar acceso cuando quiera.');
   verUsuarios(); return true;
 }
+
+window.reenviarAcceso = function(id, nombre){
+  abrirModal('Enviar acceso a ' + nombre, `
+    <p style="font-size:13.5px;line-height:1.6">Se genera una <b>clave nueva</b> y se envía el correo
+    de bienvenida completo, con la instrucción de puesta en marcha.</p>
+    <div class="aviso amber" style="margin-top:12px">La clave anterior deja de servir. Las claves
+    se guardan cifradas, así que no es posible reenviar la que tenía.</div>`,
+    'Generar clave y enviar', async () => {
+      const r = await api('reenviarBienvenida', { id });
+      if (!r.ok){ toast(r.error, true); return false; }
+      toast('Correo enviado con una clave nueva.'); return true;
+    });
+};
 
 /* ==========================================================================
    AJUSTES
@@ -1088,16 +1137,28 @@ $('#btnCambiarClave').onclick = async () => {
 /* ==========================================================================
    MODAL
    ========================================================================== */
-let _accionModal = null;
-function abrirModal(titulo, html, textoOk, accion){
+let _accionModal = null, _accionAlt = null;
+function abrirModal(titulo, html, textoOk, accion, alt){
   $('#modalTitulo').textContent = titulo;
   $('#modalBody').innerHTML = html;
   $('#modalOk').textContent = textoOk;
   $('#modalOk').disabled = false;
   _accionModal = accion;
+  _accionAlt = (alt && alt.accion) || null;
+  const bAlt = $('#modalAlt');
+  if (alt && alt.texto){ bAlt.textContent = alt.texto; bAlt.classList.remove('hide'); }
+  else bAlt.classList.add('hide');
   $('#modalBg').classList.add('show');
 }
-function cerrarModal(){ $('#modalBg').classList.remove('show'); _accionModal = null; }
+$('#modalAlt').onclick = async () => {
+  if (!_accionAlt) return;
+  const b = $('#modalAlt'); const t = b.textContent;
+  b.disabled = true; b.innerHTML = '<span class="spin"></span>';
+  try { const ok = await _accionAlt(); if (ok !== false) cerrarModal(); }
+  catch(e){ toast('No se pudo completar la operación.', true); }
+  b.disabled = false; b.textContent = t;
+};
+function cerrarModal(){ $('#modalBg').classList.remove('show'); _accionModal = null; _accionAlt = null; }
 $('#modalX').onclick = cerrarModal;
 $('#modalCancel').onclick = cerrarModal;
 $('#modalBg').onclick = e => { if (e.target === $('#modalBg')) cerrarModal(); };
